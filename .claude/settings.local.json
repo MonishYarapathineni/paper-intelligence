@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(/Users/monish/Desktop/Monish-Personal/paper-intelligence/.venv/bin/python *)"
+    ]
+  }
+}

@@ -1,0 +1,81 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+MANIFEST
+
+# --- Virtual environments ---
+.venv/
+venv/
+env/
+.env/
+
+# --- Environment / secrets ---
+.env
+.env.*
+!.env.example
+
+# --- Jupyter ---
+notebooks/.ipynb_checkpoints/
+**/.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# --- Data (large files, raw downloads) ---
+data/
+*.pdf
+*.parquet
+*.arrow
+*.bin
+*.pt
+*.safetensors
+
+# --- Model artefacts ---
+models/
+checkpoints/
+runs/
+mlruns/
+mlartifacts/
+
+# --- Test / coverage ---
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# --- Type checking ---
+.mypy_cache/
+.ruff_cache/
+.dmypy.json
+dmypy.json
+
+# --- IDE ---
+.vscode/
+.idea/
+*.iml
+*.sublime-project
+*.sublime-workspace
+
+# --- macOS ---
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# --- Logs ---
+*.log
+logs/
+
+# --- Docker ---
+.docker/
+
+# --- Misc ---
+*.swp
+*.swo
+*~
+.hypothesis/

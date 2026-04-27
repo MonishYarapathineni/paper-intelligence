@@ -1,0 +1,48 @@
+# Python 3.11+
+
+# --- Web / API ---
+fastapi>=0.111.0
+uvicorn[standard]>=0.30.0
+httpx>=0.27.0
+pydantic>=2.7.0
+python-multipart>=0.0.9       # fastapi file upload support
+
+# --- PDF Parsing ---
+marker-pdf>=1.10.0
+PyMuPDF>=1.24.0
+
+# --- Vector Stores ---
+qdrant-client>=1.9.0
+asyncpg>=0.29.0
+pgvector>=0.3.0
+
+# --- Graph Store ---
+falkordb>=1.0.0
+
+# --- LLM / Embeddings ---
+anthropic>=0.30.0
+openai>=1.35.0                # embedding calls + OpenAI-compatible endpoints (SGLang)
+
+# --- Data / Utilities ---
+python-dotenv>=1.0.0
+tenacity>=8.4.0               # retry with exponential backoff
+
+# --- Experiment tracking ---
+mlflow>=2.13.0
+
+# --- Evaluation ---
+rouge-score>=0.1.2
+sentence-transformers>=3.0.0  # cross-encoder reranker
+
+# --- Notebooks ---
+jupyter>=1.0.0
+ipykernel>=6.29.0
+ipywidgets>=8.1.0
+pandas>=2.2.0
+matplotlib>=3.9.0
+
+# --- Dev / Testing ---
+pytest>=8.2.0
+pytest-asyncio>=0.23.0
+ruff>=0.4.0
+mypy>=1.10.0
