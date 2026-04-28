@@ -25,18 +25,23 @@ class SectionType(str, Enum):
     APPENDIX = "appendix"
     UNKNOWN = "unknown"
 
-
 SECTION_KEYWORDS: dict[SectionType, list[str]] = {
     SectionType.ABSTRACT: ["abstract"],
     SectionType.INTRODUCTION: ["introduction"],
     SectionType.RELATED_WORK: ["related work", "background", "prior work"],
-    SectionType.METHODOLOGY: ["method", "approach", "model", "architecture", "framework"],
-    SectionType.EXPERIMENTS: ["experiment", "experimental", "setup", "implementation"],
-    SectionType.RESULTS: ["result", "evaluation", "performance", "comparison"],
-    SectionType.DISCUSSION: ["discussion", "analysis", "ablation"],
+    SectionType.METHODOLOGY: ["method", "approach", "model", "architecture", 
+                               "framework", "transformer", "vision transformer"],
+    SectionType.EXPERIMENTS: ["experiment", "experimental", "setup", 
+                               "implementation", "training", "fine-tuning",
+                               "pre-training", "supervision"],
+    SectionType.RESULTS: ["result", "evaluation", "performance", "comparison",
+                           "scaling", "inspection", "attention", "ablation",
+                           "analysis", "breakdown", "computational"],
+    SectionType.DISCUSSION: ["discussion"],
     SectionType.CONCLUSION: ["conclusion", "future work", "summary"],
     SectionType.REFERENCES: ["references", "bibliography"],
     SectionType.APPENDIX: ["appendix"],
+    SectionType.UNKNOWN: ["acknowledgement", "acknowledgment", "funding"],
 }
 
 VISUAL_BLOCK_TYPES = {"Figure", "FigureGroup", "PictureGroup", "TableGroup"}
@@ -84,10 +89,10 @@ class Chunker:
         self.config = config or ChunkerConfig()
 
     def chunk_document(self, doc: ParsedDocument) -> list[Chunk]:
-        """Chunk an entire ParsedDocument into ordered Chunk objects."""
         chunks: list[Chunk] = []
         current_section = "preamble"
         current_section_type = SectionType.UNKNOWN
+        last_known_type = SectionType.UNKNOWN  # tracks last non-unknown type
         current_blocks: list[PageBlock] = []
         current_pages: set[int] = set()
 
@@ -99,7 +104,6 @@ class Chunker:
                     continue
 
                 if btype == "SectionHeader":
-                    # Flush accumulator
                     if current_blocks:
                         chunk = self._make_text_chunk(
                             doc.title or doc.source_path.stem,
@@ -112,7 +116,16 @@ class Chunker:
                             chunks.append(chunk)
 
                     current_section = self._strip_html(block.content)
-                    current_section_type = self.classify_section(current_section)
+                    classified = self.classify_section(current_section)
+
+                    # Inherit parent type for subsections that can't be classified
+                    if classified == SectionType.UNKNOWN and last_known_type != SectionType.UNKNOWN:
+                        current_section_type = last_known_type
+                    else:
+                        current_section_type = classified
+                        if classified != SectionType.UNKNOWN:
+                            last_known_type = classified
+
                     current_blocks = []
                     current_pages = set()
 
@@ -131,7 +144,6 @@ class Chunker:
                     current_blocks.append(block)
                     current_pages.add(page.page_number)
 
-        # Flush remaining
         if current_blocks:
             chunk = self._make_text_chunk(
                 doc.title or doc.source_path.stem,
@@ -146,10 +158,14 @@ class Chunker:
         return chunks
 
     def classify_section(self, heading: str) -> SectionType:
-        # Strip leading section numbers: "3.1 Method" → "method"
-        lower = re.sub(r'^[\d\.\s]+', '', heading.lower()).strip()
+        """Map heading to SectionType, stripping leading numbers and span tags."""
+        # Strip residual span content (e.g. from <span id="..."></span>)
+        clean = re.sub(r'[A-Z]\d*\.\d*\s+', '', heading)  # strip appendix prefixes A.1
+        # Strip leading numbers: "3.1 Method" → "method"
+        clean = re.sub(r'^[\d\.\s]+', '', clean).strip().lower()
+        
         for section_type, keywords in SECTION_KEYWORDS.items():
-            if any(kw in lower for kw in keywords):
+            if any(kw in clean for kw in keywords):
                 return section_type
         return SectionType.UNKNOWN
 
