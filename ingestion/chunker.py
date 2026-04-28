@@ -146,8 +146,8 @@ class Chunker:
         return chunks
 
     def classify_section(self, heading: str) -> SectionType:
-        """Map a heading string to the closest SectionType."""
-        lower = heading.lower()
+        # Strip leading section numbers: "3.1 Method" → "method"
+        lower = re.sub(r'^[\d\.\s]+', '', heading.lower()).strip()
         for section_type, keywords in SECTION_KEYWORDS.items():
             if any(kw in lower for kw in keywords):
                 return section_type
@@ -157,15 +157,11 @@ class Chunker:
         """Rough token estimate without running a tokeniser."""
         return max(1, int(len(text) / chars_per_token))
 
-    def _make_text_chunk(
-        self,
-        doc_title: str,
-        section: str,
-        section_type: SectionType,
-        blocks: list[PageBlock],
-        page_numbers: list[int],
-    ) -> Chunk | None:
-        content = "\n\n".join(b.content for b in blocks if b.content)
+    def _make_text_chunk(self, doc_title, section, section_type, blocks, page_numbers):
+        # Strip HTML from each block before joining
+        content = "\n\n".join(
+            self._strip_html(b.content) for b in blocks if b.content
+        )
         if len(content.split()) < self.config.min_chunk_words:
             return None
         return Chunk(
