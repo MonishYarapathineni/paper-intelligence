@@ -36,12 +36,23 @@ Multimodal document intelligence pipeline for research papers.
 
 
 
-### [today] Figure detection threshold — drawing_count > 50
+### [4/27] Figure detection threshold — drawing_count > 50
 - pymupdf4llm omits embedded images, leaving "intentionally omitted" markers
 - vector drawings count varies wildly: 333 for a real figure (ViT page 2),
   4 for table formatting (ViT page 4), 2-3 for title page borders
 - Three independent signals: raster count, omitted markers, drawing count > 50
 - Threshold derived empirically from actual test papers, not assumed
+
+### [4/28] Switched from pymupdf4llm + heuristic router to Marker
+- pymupdf4llm required regex, drawing counts, equation density, 
+  keyword matching to route pages — fragile and hard to tune
+- Marker (LayoutLMv3 + Surya) classifies every block by type:
+  Figure, TableGroup, Equation, SectionHeader, Text, etc.
+- Routing becomes a block type lookup — no heuristics
+- Fixed 2 false positive SKIPs that heuristic router got wrong
+- Tradeoff: Marker is heavier (downloads ~3GB of models), 
+  slower per document, requires GPU for reasonable speed
+- For this project that tradeoff is worth it — accuracy over speed
 
 ## Eval framework
 <!-- fill in later -->
