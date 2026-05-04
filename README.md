@@ -54,6 +54,15 @@ Multimodal document intelligence pipeline for research papers.
   slower per document, requires GPU for reasonable speed
 - For this project that tradeoff is worth it — accuracy over speed
 
+
+### [4/28] Section classification — keyword matching + parent inheritance
+- Numbered headings stripped before keyword matching: "3.1 Method" → "method"  
+- Subsections that don't match any keyword inherit parent section type
+- Appendix subsections inherit from last known classified section
+- Known edge case: h1 title page hits "transformer" keyword → classified as methodology
+- Good enough for retrieval — section type is metadata, not primary search signal
+
+
 ## Eval framework
 <!-- fill in later -->
 

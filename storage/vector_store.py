@@ -7,7 +7,8 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from ingestion.chunker import Chunk
-
+import uuid
+from qdrant_client.models import PointStruct
 
 @dataclass
 class VectorDocument:
@@ -106,8 +107,41 @@ class QdrantVectorStore(VectorStoreBase):
         Returns:
             Initialised qdrant_client.AsyncQdrantClient instance.
         """
-        raise NotImplementedError
+        if self._client is not None:
+            return self._client
 
+        from qdrant_client import AsyncQdrantClient
+        from qdrant_client.models import Distance, VectorParams
+
+        self._client = AsyncQdrantClient(url=self.config.qdrant_url)
+
+        # Create collection if it doesn't exist
+        collections = await self._client.get_collections()
+        existing = [c.name for c in collections.collections]
+
+        if self.config.collection_name not in existing:
+            distance_map = {
+                "cosine": Distance.COSINE,
+                "dot": Distance.DOT,
+                "euclidean": Distance.EUCLID,
+            }
+            await self._client.create_collection(
+                collection_name=self.config.collection_name,
+                vectors_config=VectorParams(
+                    size=self.config.embedding_dim,
+                    distance=distance_map[self.config.distance_metric],
+                ),
+            )
+
+        return self._client
+    import uuid
+
+    def _to_uuid(self, chunk_id: str) -> str:
+        """Convert hex chunk_id to UUID format for Qdrant compatibility."""
+        # Pad to 32 chars and format as UUID
+        padded = chunk_id.ljust(32, '0')
+        return str(uuid.UUID(padded))
+    
     async def upsert(self, documents: list[VectorDocument]) -> int:
         """Upsert documents into the Qdrant collection in batches of 100.
 
@@ -120,7 +154,32 @@ class QdrantVectorStore(VectorStoreBase):
         Returns:
             Count of upserted points.
         """
-        raise NotImplementedError
+
+        client = await self._get_client()
+        batch_size = 100
+        total = 0
+
+        for i in range(0, len(documents), batch_size):
+            batch = documents[i:i + batch_size]
+            points = [
+                PointStruct(
+                    id= self._to_uuid(doc.chunk_id),
+                    vector=doc.embedding,
+                    payload={
+                        "chunk_id": doc.chunk_id,
+                        "text": doc.text,
+                        **doc.metadata,
+                    }
+                )
+                for doc in batch
+            ]
+            await client.upsert(
+                collection_name=self.config.collection_name,
+                points=points,
+            )
+            total += len(batch)
+
+        return total
 
     async def search(
         self,
