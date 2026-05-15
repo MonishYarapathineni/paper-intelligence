@@ -271,7 +271,14 @@ class VLMClient:
             raise ValueError("No partial extractions to merge")
 
         # Filter out completely empty partials
-        non_empty = [p for p in partials if p.title or p.datasets or p.methods or p.results]
+        non_empty = [
+            p for p in partials
+            if any([
+                p.title, p.problem_statement, p.abstract,
+                p.authors, p.datasets, p.methods, p.results,
+                p.baselines, p.limitations, p.conclusion_summary
+            ])
+]
         if not non_empty:
             non_empty = partials  # fall back to all if none have content
 
