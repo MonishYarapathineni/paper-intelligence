@@ -469,6 +469,8 @@ class VLMClient:
             f"- Extract confidence scores per field: 1.0 if clearly present, "
             f"0.5 if partially present, 0.0 if absent\n"
             f"- Return valid JSON matching the PartialExtraction schema exactly"
+            f"- Set extraction_confidence to a float 0.0-1.0 reflecting overall extraction quality\n"
+            f"- Set field_confidence.title, field_confidence.authors, etc. individually\n"
         )
 
     @staticmethod
