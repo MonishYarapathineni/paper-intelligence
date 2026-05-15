@@ -8,7 +8,8 @@ from typing import Any, Literal
 
 from ingestion.chunker import Chunk
 import uuid
-from qdrant_client.models import PointStruct
+from qdrant_client.models import PointStruct, Filter, FieldCondition, MatchValue, PointIdsList
+from qdrant_client import AsyncQdrantClient
 
 @dataclass
 class VectorDocument:
@@ -30,7 +31,7 @@ class SearchResult:
 class VectorStoreConfig:
     backend: Literal["pgvector", "qdrant"] = "qdrant"
     collection_name: str = "paper_chunks"
-    embedding_dim: int = 1536
+    embedding_dim: int = 384
     # pgvector settings
     pg_dsn: str = "postgresql://localhost:5432/papers"
     # Qdrant settings
@@ -82,9 +83,23 @@ class VectorStoreBase(ABC):
             Number of documents deleted.
         """
 
+        client = await self._get_client()
+        uuids = [self._to_uuid(cid) for cid in chunk_ids]
+
+        await client.delete(
+            collection_name=self.config.collection_name,
+            points_selector=PointIdsList(points=uuids),
+        )
+        return len(chunk_ids)
+
     @abstractmethod
     async def count(self) -> int:
         """Return the total number of vectors currently stored."""
+        client = await self._get_client()
+        info = await client.get_collection(
+            collection_name=self.config.collection_name
+        )
+        return info.points_count
 
 
 class QdrantVectorStore(VectorStoreBase):
@@ -110,8 +125,6 @@ class QdrantVectorStore(VectorStoreBase):
         if self._client is not None:
             return self._client
 
-        from qdrant_client import AsyncQdrantClient
-        from qdrant_client.models import Distance, VectorParams
 
         self._client = AsyncQdrantClient(url=self.config.qdrant_url)
 
@@ -134,7 +147,7 @@ class QdrantVectorStore(VectorStoreBase):
             )
 
         return self._client
-    import uuid
+    
 
     def _to_uuid(self, chunk_id: str) -> str:
         """Convert hex chunk_id to UUID format for Qdrant compatibility."""
@@ -200,13 +213,43 @@ class QdrantVectorStore(VectorStoreBase):
         Returns:
             Ranked SearchResult list.
         """
-        raise NotImplementedError
+        
 
-    async def delete(self, chunk_ids: list[str]) -> int:
-        raise NotImplementedError
+        client = await self._get_client()
 
-    async def count(self) -> int:
-        raise NotImplementedError
+        qdrant_filter = None
+        if filters:
+            qdrant_filter = Filter(
+                must=[
+                    FieldCondition(
+                        key=key,
+                        match=MatchValue(value=value),
+                    )
+                    for key, value in filters.items()
+                ]
+            )
+
+        results = await client.query_points(
+            collection_name=self.config.collection_name,
+            query=query_embedding,
+            limit=top_k,
+            query_filter=qdrant_filter,
+            with_payload=True,
+        )
+
+        return [
+            SearchResult(
+                chunk_id=point.payload.get("chunk_id", str(point.id)),
+                text=point.payload.get("text", ""),
+                score=point.score,
+                metadata={
+                    k: v for k, v in point.payload.items()
+                    if k not in ("chunk_id", "text")
+                },
+            )
+            for point in results.points
+        ]
+
 
 
 class PgVectorStore(VectorStoreBase):
