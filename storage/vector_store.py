@@ -2,14 +2,24 @@
 
 from __future__ import annotations
 
+import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-from ingestion.chunker import Chunk
-import uuid
-from qdrant_client.models import PointStruct, Filter, FieldCondition, MatchValue, PointIdsList
 from qdrant_client import AsyncQdrantClient
+from qdrant_client.models import (
+    Distance,
+    FieldCondition,
+    Filter,
+    MatchValue,
+    PointIdsList,
+    PointStruct,
+    VectorParams,
+)
+
+from ingestion.chunker import Chunk
+
 
 @dataclass
 class VectorDocument:
@@ -31,10 +41,8 @@ class SearchResult:
 class VectorStoreConfig:
     backend: Literal["pgvector", "qdrant"] = "qdrant"
     collection_name: str = "paper_chunks"
-    embedding_dim: int = 384
-    # pgvector settings
+    embedding_dim: int = 1536
     pg_dsn: str = "postgresql://localhost:5432/papers"
-    # Qdrant settings
     qdrant_url: str = "http://localhost:6333"
     qdrant_api_key: str | None = None
     distance_metric: Literal["cosine", "dot", "euclidean"] = "cosine"
@@ -45,14 +53,7 @@ class VectorStoreBase(ABC):
 
     @abstractmethod
     async def upsert(self, documents: list[VectorDocument]) -> int:
-        """Insert or update a batch of vector documents.
-
-        Args:
-            documents: List of VectorDocument objects with pre-computed embeddings.
-
-        Returns:
-            Number of documents successfully upserted.
-        """
+        """Insert or update a batch of vector documents."""
 
     @abstractmethod
     async def search(
@@ -61,74 +62,36 @@ class VectorStoreBase(ABC):
         top_k: int = 10,
         filters: dict[str, Any] | None = None,
     ) -> list[SearchResult]:
-        """Find the top-k nearest neighbours for a query embedding.
-
-        Args:
-            query_embedding: Dense float vector of the same dimension as stored documents.
-            top_k: Maximum number of results to return.
-            filters: Metadata key-value filters to apply before ranking.
-
-        Returns:
-            Ordered list of SearchResult objects, highest score first.
-        """
+        """Find the top-k nearest neighbours for a query embedding."""
 
     @abstractmethod
     async def delete(self, chunk_ids: list[str]) -> int:
-        """Delete documents by their chunk IDs.
-
-        Args:
-            chunk_ids: List of chunk_id strings to remove.
-
-        Returns:
-            Number of documents deleted.
-        """
-
-        client = await self._get_client()
-        uuids = [self._to_uuid(cid) for cid in chunk_ids]
-
-        await client.delete(
-            collection_name=self.config.collection_name,
-            points_selector=PointIdsList(points=uuids),
-        )
-        return len(chunk_ids)
+        """Delete documents by their chunk IDs."""
 
     @abstractmethod
     async def count(self) -> int:
         """Return the total number of vectors currently stored."""
-        client = await self._get_client()
-        info = await client.get_collection(
-            collection_name=self.config.collection_name
-        )
-        return info.points_count
 
 
 class QdrantVectorStore(VectorStoreBase):
-    """Qdrant-backed vector store using the qdrant-client Python SDK.
-
-    Creates the collection on first use if it does not already exist.
-    Supports metadata filtering via Qdrant's Filter payload.
-    """
+    """Qdrant-backed vector store using the qdrant-client Python SDK."""
 
     def __init__(self, config: VectorStoreConfig) -> None:
         self.config = config
-        self._client = None  # initialised lazily in _get_client()
+        self._client = None
 
-    async def _get_client(self):
-        """Lazily initialise and return the async Qdrant client.
+    def _to_uuid(self, chunk_id: str) -> str:
+        """Convert hex chunk_id to UUID format for Qdrant compatibility."""
+        padded = chunk_id.ljust(32, '0')
+        return str(uuid.UUID(padded))
 
-        Creates the target collection if it does not exist, using the
-        configured distance metric and embedding dimension.
-
-        Returns:
-            Initialised qdrant_client.AsyncQdrantClient instance.
-        """
+    async def _get_client(self) -> AsyncQdrantClient:
+        """Lazily initialise and return the async Qdrant client."""
         if self._client is not None:
             return self._client
 
-
         self._client = AsyncQdrantClient(url=self.config.qdrant_url)
 
-        # Create collection if it doesn't exist
         collections = await self._client.get_collections()
         existing = [c.name for c in collections.collections]
 
@@ -147,27 +110,9 @@ class QdrantVectorStore(VectorStoreBase):
             )
 
         return self._client
-    
 
-    def _to_uuid(self, chunk_id: str) -> str:
-        """Convert hex chunk_id to UUID format for Qdrant compatibility."""
-        # Pad to 32 chars and format as UUID
-        padded = chunk_id.ljust(32, '0')
-        return str(uuid.UUID(padded))
-    
     async def upsert(self, documents: list[VectorDocument]) -> int:
-        """Upsert documents into the Qdrant collection in batches of 100.
-
-        Converts VectorDocument metadata to Qdrant payload dicts and uses
-        qdrant_client.models.PointStruct for serialisation.
-
-        Args:
-            documents: Documents with pre-computed embeddings.
-
-        Returns:
-            Count of upserted points.
-        """
-
+        """Upsert documents in batches of 100."""
         client = await self._get_client()
         batch_size = 100
         total = 0
@@ -176,7 +121,7 @@ class QdrantVectorStore(VectorStoreBase):
             batch = documents[i:i + batch_size]
             points = [
                 PointStruct(
-                    id= self._to_uuid(doc.chunk_id),
+                    id=self._to_uuid(doc.chunk_id),
                     vector=doc.embedding,
                     payload={
                         "chunk_id": doc.chunk_id,
@@ -200,31 +145,14 @@ class QdrantVectorStore(VectorStoreBase):
         top_k: int = 10,
         filters: dict[str, Any] | None = None,
     ) -> list[SearchResult]:
-        """Run a nearest-neighbour search using Qdrant's query_points API.
-
-        Converts the filters dict to a qdrant_client.models.Filter object
-        if provided.
-
-        Args:
-            query_embedding: Query vector.
-            top_k: Number of results.
-            filters: Metadata equality filters.
-
-        Returns:
-            Ranked SearchResult list.
-        """
-        
-
+        """Nearest-neighbour search with optional payload filtering."""
         client = await self._get_client()
 
         qdrant_filter = None
         if filters:
             qdrant_filter = Filter(
                 must=[
-                    FieldCondition(
-                        key=key,
-                        match=MatchValue(value=value),
-                    )
+                    FieldCondition(key=key, match=MatchValue(value=value))
                     for key, value in filters.items()
                 ]
             )
@@ -250,14 +178,28 @@ class QdrantVectorStore(VectorStoreBase):
             for point in results.points
         ]
 
+    async def delete(self, chunk_ids: list[str]) -> int:
+        """Delete points by chunk_id."""
+        client = await self._get_client()
+        uuids = [self._to_uuid(cid) for cid in chunk_ids]
+
+        await client.delete(
+            collection_name=self.config.collection_name,
+            points_selector=PointIdsList(points=uuids),
+        )
+        return len(chunk_ids)
+
+    async def count(self) -> int:
+        """Return total number of vectors in the collection."""
+        client = await self._get_client()
+        info = await client.get_collection(
+            collection_name=self.config.collection_name
+        )
+        return info.points_count
 
 
 class PgVectorStore(VectorStoreBase):
-    """PostgreSQL + pgvector backed store using asyncpg.
-
-    Stores embeddings in a table with columns: chunk_id, text, embedding,
-    metadata (jsonb). Creates the table and the pgvector extension if absent.
-    """
+    """PostgreSQL + pgvector backed store — stub, not primary backend."""
 
     CREATE_TABLE_SQL = """
     CREATE EXTENSION IF NOT EXISTS vector;
@@ -277,48 +219,12 @@ class PgVectorStore(VectorStoreBase):
         self._pool = None
 
     async def _get_pool(self):
-        """Lazily create and return an asyncpg connection pool.
-
-        Also runs CREATE_TABLE_SQL on first connection to ensure the schema
-        exists.
-
-        Returns:
-            asyncpg.Pool connected to the configured DSN.
-        """
         raise NotImplementedError
 
     async def upsert(self, documents: list[VectorDocument]) -> int:
-        """Bulk upsert using asyncpg executemany with ON CONFLICT DO UPDATE.
-
-        Serialises embeddings with pgvector's vector type string format.
-
-        Args:
-            documents: List of VectorDocument objects.
-
-        Returns:
-            Number of rows affected.
-        """
         raise NotImplementedError
 
-    async def search(
-        self,
-        query_embedding: list[float],
-        top_k: int = 10,
-        filters: dict[str, Any] | None = None,
-    ) -> list[SearchResult]:
-        """Run a cosine similarity search using the <=> operator.
-
-        Builds a WHERE clause from filters dict using JSONB containment (@>)
-        for simple key-value filtering.
-
-        Args:
-            query_embedding: Query vector.
-            top_k: Number of neighbours to return.
-            filters: Metadata equality constraints.
-
-        Returns:
-            Ranked SearchResult list.
-        """
+    async def search(self, query_embedding, top_k=10, filters=None):
         raise NotImplementedError
 
     async def delete(self, chunk_ids: list[str]) -> int:
@@ -329,17 +235,7 @@ class PgVectorStore(VectorStoreBase):
 
 
 def create_vector_store(config: VectorStoreConfig) -> VectorStoreBase:
-    """Factory that returns a VectorStoreBase implementation for the given config.
-
-    Args:
-        config: VectorStoreConfig with backend set to 'qdrant' or 'pgvector'.
-
-    Returns:
-        Concrete VectorStoreBase instance.
-
-    Raises:
-        ValueError: If config.backend is not recognised.
-    """
+    """Factory returning the configured VectorStoreBase implementation."""
     if config.backend == "qdrant":
         return QdrantVectorStore(config)
     if config.backend == "pgvector":
