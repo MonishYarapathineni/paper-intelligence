@@ -154,7 +154,100 @@ class VLMClient:
             A valid PaperExtraction (raises ValidationError if required fields
             could not be populated from any page).
         """
-        raise NotImplementedError
+        if not partials:
+            raise ValueError("No partial extractions to merge")
+
+        # Filter out completely empty partials
+        non_empty = [p for p in partials if p.title or p.datasets or p.methods or p.results]
+        if not non_empty:
+            non_empty = partials  # fall back to all if none have content
+
+        # --- Scalar fields ---
+        # 'union': take first non-empty value (title page comes first)
+        # 'last_wins': take last non-empty value
+        def pick_scalar(values: list[str]) -> str:
+            non_empty_vals = [v for v in values if v and v.strip()]
+            if not non_empty_vals:
+                return ""
+            return non_empty_vals[-1] if strategy == "last_wins" else non_empty_vals[0]
+
+        title = pick_scalar([p.title for p in non_empty])
+        problem_statement = pick_scalar([p.problem_statement for p in non_empty])
+        abstract = pick_scalar([p.abstract or "" for p in non_empty])
+        conclusion_summary = pick_scalar([p.conclusion_summary or "" for p in non_empty])
+        arxiv_id = pick_scalar([p.arxiv_id or "" for p in non_empty])
+
+        # --- List fields — deduplicate by name ---
+        def merge_by_name(lists):
+            seen = {}
+            for item in (i for sublist in lists for i in sublist):
+                key = getattr(item, "name", None) or getattr(item, "description", str(item))
+                if key not in seen:
+                    seen[key] = item
+            return list(seen.values())
+
+        authors = merge_by_name([p.authors for p in non_empty])
+        institutions = merge_by_name([p.institutions for p in non_empty])
+        datasets = merge_by_name([p.datasets for p in non_empty])
+        methods = merge_by_name([p.methods for p in non_empty])
+        baselines = merge_by_name([p.baselines for p in non_empty])
+
+        # Results deduplicated by method_name + dataset combination
+        seen_results = {}
+        for partial in non_empty:
+            for r in partial.results:
+                key = f"{r.method_name}_{r.dataset}"
+                if key not in seen_results:
+                    seen_results[key] = r
+        results = list(seen_results.values())
+
+        # Limitations deduplicated by description
+        seen_limitations = {}
+        for partial in non_empty:
+            for lim in partial.limitations:
+                if lim.description not in seen_limitations:
+                    seen_limitations[lim.description] = lim
+        limitations = list(seen_limitations.values())
+
+        # --- Confidence scores ---
+        # Aggregate extraction_confidence as mean across partials
+        confidences = [p.extraction_confidence for p in non_empty if p.extraction_confidence > 0]
+        aggregate_confidence = sum(confidences) / len(confidences) if confidences else 0.0
+
+        # Per-field confidence: max across pages (if any page got it right, we trust it)
+        from extraction.schemas import FieldConfidence
+        field_confidence = FieldConfidence(
+            title=max((p.field_confidence.title for p in non_empty), default=0.0),
+            authors=max((p.field_confidence.authors for p in non_empty), default=0.0),
+            datasets=max((p.field_confidence.datasets for p in non_empty), default=0.0),
+            methods=max((p.field_confidence.methods for p in non_empty), default=0.0),
+            results=max((p.field_confidence.results for p in non_empty), default=0.0),
+            baselines=max((p.field_confidence.baselines for p in non_empty), default=0.0),
+            limitations=max((p.field_confidence.limitations for p in non_empty), default=0.0),
+            problem_statement=max((p.field_confidence.problem_statement for p in non_empty), default=0.0),
+        )
+
+        return PaperExtraction(
+            arxiv_id=arxiv_id or None,
+            title=title,
+            problem_statement=problem_statement,
+            abstract=abstract or None,
+            conclusion_summary=conclusion_summary or None,
+            authors=authors,
+            institutions=institutions,
+            datasets=datasets,
+            methods=methods,
+            results=results,
+            baselines=baselines,
+            limitations=limitations,
+            extraction_confidence=aggregate_confidence,
+            field_confidence=field_confidence,
+            extraction_metadata={
+                "pages_processed": len(partials),
+                "pages_with_content": len(non_empty),
+                "merge_strategy": strategy,
+            }
+        )
 
     def _build_messages(
         self,
@@ -171,7 +264,45 @@ class VLMClient:
         Returns:
             List of message dicts ready for the /v1/chat/completions body.
         """
-        raise NotImplementedError
+        # System message — sets the extraction persona
+        messages = [
+            {
+                "role": "system",
+                "content": request.system_prompt or self.SYSTEM_PROMPT,
+            }
+        ]
+
+        # User message — text content always present, image optional
+        user_content: list[dict[str, Any]] = []
+
+        # Add image first if available — VLMs attend better when image precedes text
+        if request.page_image_path and request.page_image_path.exists():
+            user_content.append({
+                "type": "image_url",
+                "image_url": {
+                    "url": self._encode_image(request.page_image_path),
+                },
+            })
+
+        # Add the extraction prompt
+        user_content.append({
+            "type": "text",
+            "text": request.user_prompt,
+        })
+
+        # Add the page text if present
+        if request.page_text:
+            user_content.append({
+                "type": "text",
+                "text": f"Page content:\n\n{request.page_text}",
+            })
+
+        messages.append({
+            "role": "user",
+            "content": user_content,
+        })
+
+        return messages
 
     def _build_extraction_prompt(
         self,
@@ -189,7 +320,43 @@ class VLMClient:
         Returns:
             Formatted prompt string.
         """
-        raise NotImplementedError
+
+        all_fields = {
+            "title": "Full paper title exactly as written",
+            "authors": "All authors with names, affiliations, emails if present",
+            "institutions": "All affiliated institutions with name, department, country",
+            "problem_statement": "1-3 sentences: what problem does this paper solve and why it matters",
+            "abstract": "Full abstract text verbatim",
+            "datasets": "All datasets used — name, description, size, splits",
+            "methods": "Key methods/architectures proposed — name, description, novelty",
+            "results": "Quantitative results — method name, metrics, dataset, conditions",
+            "baselines": "Baseline systems compared against — name, metrics, notes",
+            "limitations": "Limitations stated or inferable — description, type",
+            "conclusion_summary": "1-2 sentence summary of conclusions",
+        }
+
+        fields_to_extract = (
+            {k: v for k, v in all_fields.items() if k in target_fields}
+            if target_fields
+            else all_fields
+        )
+
+        field_instructions = "\n".join(
+            f"- {field}: {description}"
+            for field, description in fields_to_extract.items()
+        )
+
+        return (
+            f"Extract the following fields from this research paper page:\n\n"
+            f"{field_instructions}\n\n"
+            f"Rules:\n"
+            f"- Only extract information explicitly present in the provided content\n"
+            f"- Do not infer, hallucinate, or fill gaps with prior knowledge\n"
+            f"- For fields not present on this page, use empty string or empty list\n"
+            f"- Extract confidence scores per field: 1.0 if clearly present, "
+            f"0.5 if partially present, 0.0 if absent\n"
+            f"- Return valid JSON matching the PartialExtraction schema exactly"
+        )
 
     @staticmethod
     def _encode_image(image_path: Path) -> str:
