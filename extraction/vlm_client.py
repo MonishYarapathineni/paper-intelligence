@@ -11,7 +11,8 @@ from typing import Any
 import httpx
 
 from extraction.schemas import PartialExtraction, PaperExtraction
-
+import asyncio
+import time
 
 @dataclass
 class SGLangConfig:
@@ -92,13 +93,25 @@ class VLMClient:
         Returns:
             ExtractionResponse with parsed PartialExtraction and token counts.
         """
-        raise NotImplementedError
+        
+        prompt = self._build_extraction_prompt(target_fields)
+
+        request = ExtractionRequest(
+            page_image_path=image_path,
+            page_text=page_text,
+            system_prompt=self.SYSTEM_PROMPT,
+            user_prompt=prompt,
+        )
+
+        return await self.extract_with_retry(request)
+        
 
     async def extract_document(
         self,
         pages: list[tuple[Path | None, str]],
         merge_strategy: str = "union",
     ) -> PaperExtraction:
+        
         """Run page-level extraction across a full document and merge results.
 
         Extracts each page independently (or in parallel with asyncio.gather)
@@ -114,7 +127,24 @@ class VLMClient:
         Returns:
             Fully merged PaperExtraction.
         """
-        raise NotImplementedError
+        partials = []
+
+        for i, (image_path, page_text) in enumerate(pages):
+            if not page_text.strip() and image_path is None:
+                continue  # skip empty pages
+
+            print(f"  Extracting page {i + 1}/{len(pages)}...")
+            response = await self.extract_page(image_path, page_text)
+
+            if response.success and response.parsed:
+                partials.append(response.parsed)
+            else:
+                print(f"  Page {i + 1} extraction failed: {response.error}")
+
+        if not partials:
+            raise ValueError("No pages successfully extracted")
+
+        return self.merge_extractions(partials, strategy=merge_strategy)
 
     async def extract_with_retry(
         self,
@@ -132,7 +162,90 @@ class VLMClient:
         Returns:
             ExtractionResponse from the first successful attempt.
         """
-        raise NotImplementedError
+
+        last_exception = None
+
+        for attempt in range(self.config.max_retries):
+            start_ms = time.monotonic() * 1000
+            try:
+                messages = self._build_messages(request)
+
+                body = {
+                    "model": self.config.model,
+                    "messages": messages,
+                    "max_tokens": self.config.max_tokens,
+                    "temperature": self.config.temperature,
+                }
+
+                # Constrained decoding — forces valid JSON matching schema
+                if self.config.use_constrained_decoding:
+                    body["response_format"] = {
+                        "type": "json_schema",
+                        "json_schema": {
+                            "name": "PartialExtraction",
+                            "schema": PartialExtraction.model_json_schema(),
+                        }
+                    }
+
+                response = await self._client.post(
+                    "/v1/chat/completions",
+                    json=body,
+                )
+
+                latency_ms = time.monotonic() * 1000 - start_ms
+
+                if response.status_code >= 500:
+                    raise httpx.HTTPStatusError(
+                        f"Server error {response.status_code}",
+                        request=response.request,
+                        response=response,
+                    )
+
+                data = response.json()
+                raw_text = data["choices"][0]["message"]["content"]
+                usage = data.get("usage", {})
+
+                # Parse into PartialExtraction
+                try:
+                    parsed = PartialExtraction.model_validate_json(raw_text)
+                except Exception as parse_err:
+                    # Try stripping markdown fences if constrained decoding failed
+                    clean = raw_text.strip().strip("```json").strip("```").strip()
+                    try:
+                        parsed = PartialExtraction.model_validate_json(clean)
+                    except Exception:
+                        raise ValueError(f"JSON parse failed: {parse_err}") from parse_err
+
+                return ExtractionResponse(
+                    raw_text=raw_text,
+                    parsed=parsed,
+                    input_tokens=usage.get("prompt_tokens", 0),
+                    output_tokens=usage.get("completion_tokens", 0),
+                    latency_ms=latency_ms,
+                    model=self.config.model,
+                    success=True,
+                )
+
+            except Exception as e:
+                last_exception = e
+                wait = 2 ** attempt  # exponential backoff: 1s, 2s, 4s
+                print(f"Attempt {attempt + 1} failed: {e}. Retrying in {wait}s...")
+                await asyncio.sleep(wait)
+
+        # All retries exhausted
+        return ExtractionResponse(
+            raw_text="",
+            parsed=None,
+            input_tokens=0,
+            output_tokens=0,
+            latency_ms=0,
+            model=self.config.model,
+            success=False,
+            error=str(last_exception),
+        )
+
+            
+    
 
     def merge_extractions(
         self,
