@@ -128,24 +128,51 @@ class VLMClient:
             Fully merged PaperExtraction.
         """
         partials = []
+        total = len(pages)
 
         for i, (image_path, page_text) in enumerate(pages):
             if not page_text.strip() and image_path is None:
-                continue  # skip empty pages
+                continue
 
-            print(f"  Extracting page {i + 1}/{len(pages)}...")
-            response = await self.extract_page(image_path, page_text)
+            # Smart target fields based on page position
+            # Early pages likely have title/authors/abstract
+            # All pages may have datasets/methods/results
+            if i == 0:
+                target_fields = [
+                    "title", "authors", "institutions",
+                    "abstract", "problem_statement",
+                    "datasets", "methods",
+                ]
+            elif i <= 2:
+                target_fields = [
+                    "problem_statement", "abstract",
+                    "datasets", "methods", "baselines",
+                ]
+            else:
+                target_fields = [
+                    "datasets", "methods", "results",
+                    "baselines", "limitations", "conclusion_summary",
+                ]
+
+            print(f"  Extracting page {i + 1}/{total}...")
+            response = await self.extract_page(
+                image_path=image_path,
+                page_text=page_text,
+                target_fields=target_fields,
+            )
 
             if response.success and response.parsed:
                 partials.append(response.parsed)
             else:
-                print(f"  Page {i + 1} extraction failed: {response.error}")
+                print(f"  Page {i + 1} failed: {response.error}")
 
         if not partials:
             raise ValueError("No pages successfully extracted")
 
         return self.merge_extractions(partials, strategy=merge_strategy)
 
+
+        
     async def extract_with_retry(
         self,
         request: ExtractionRequest,
